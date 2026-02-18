@@ -3,210 +3,164 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Parcel Master: Debug Mode</title>
-    <!-- OpenCV laden -->
-    <script async src="https://docs.opencv.org/4.5.4/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    <title>Kamera Notfall-Test</title>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; font-family: monospace; color: white; }
-        #container { position: relative; width: 100vw; height: 100vh; }
+        body { 
+            background-color: #330000; /* Dunkelrot = Fehler/Laden */
+            color: #fff; 
+            font-family: sans-serif; 
+            margin: 0; 
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
         
-        /* WICHTIG: Video sichtbar machen für Debugging, Canvas liegt darüber */
-        video { position: absolute; top:0; left:0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
-        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; pointer-events: none; }
-        
-        #ui-layer { 
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; 
-            display: flex; flex-direction: column; justify-content: space-between; pointer-events: none;
+        /* Das Video muss sichtbar sein! Keine Tricks. */
+        video {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            z-index: 1;
+            background: #000;
         }
 
-        .top-info { background: rgba(0,0,0,0.7); padding: 10px; text-align: center; pointer-events: auto; }
-        .log-box { font-size: 0.8rem; color: #0f0; min-height: 20px; }
-        .error-box { font-size: 0.8rem; color: #f00; font-weight: bold; }
-
-        .controls { padding: 20px; text-align: center; pointer-events: auto; background: rgba(0,0,0,0.5); }
-        button { 
-            padding: 15px 30px; font-size: 1.1rem; border-radius: 8px; border: none; 
-            background: #007bff; color: white; font-weight: bold; cursor: pointer;
+        /* Log-Layer liegt ÜBER dem Video */
+        #log-layer {
+            position: absolute;
+            top: 10px; left: 10px; right: 10px;
+            z-index: 999;
+            pointer-events: none;
         }
-        button:disabled { background: #555; color: #aaa; }
+
+        .msg {
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid #fff;
+            padding: 10px;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .error { border-color: #ff0000; color: #ff9999; }
+        .success { border-color: #00ff00; color: #99ff99; }
+        .warn { border-color: #ffff00; color: #ffff99; }
+
+        /* Ein Button, falls Autoplay blockiert wird */
+        #start-btn {
+            position: absolute;
+            bottom: 50px;
+            z-index: 1000;
+            padding: 20px 40px;
+            font-size: 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            display: none; /* Erstmal verstecken */
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
 
-<div id="container">
-    <!-- Playsinline ist wichtig für iOS! -->
-    <video id="videoInput" playsinline muted></video>
-    <canvas id="canvasOutput"></canvas>
-    
-    <div id="ui-layer">
-        <div class="top-info">
-            <div id="status">Lade OpenCV (ca. 8MB)... Bitte warten.</div>
-            <div id="error-log" class="error-box"></div>
-        </div>
-        
-        <div class="controls">
-            <button id="btn-start" disabled onclick="startCamera()">KAMERA STARTEN</button>
-        </div>
+    <video id="cam-video" autoplay playsinline muted></video>
+
+    <div id="log-layer">
+        <div class="msg">Initialisiere Skript...</div>
     </div>
-</div>
+
+    <button id="start-btn" onclick="startCameraManual()">KAMERA STARTEN</button>
 
 <script>
-// UI Referenzen
-const statusEl = document.getElementById('status');
-const errorEl = document.getElementById('error-log');
-const btnStart = document.getElementById('btn-start');
-const video = document.getElementById('videoInput');
-const canvas = document.getElementById('canvasOutput');
-const ctx = canvas.getContext('2d');
+    const logLayer = document.getElementById('log-layer');
+    const video = document.getElementById('cam-video');
+    const btn = document.getElementById('start-btn');
 
-// Variablen
-let stream = null;
-let cvReady = false;
-let isStreaming = false;
-
-// OpenCV Objekte (werden erst initiiert wenn Video läuft)
-let src, dst, contours, hierarchy, poly;
-
-function logError(msg) {
-    console.error(msg);
-    errorEl.innerText = "FEHLER: " + msg;
-}
-
-// 1. Wird aufgerufen, wenn das OpenCV Skript fertig geladen ist
-function onOpenCvReady() {
-    cvReady = true;
-    statusEl.innerText = "OpenCV bereit. Bitte Kamera starten.";
-    btnStart.disabled = false;
-    btnStart.style.background = "#28a745"; // Grün
-}
-
-// 2. Kamera manuell starten (umgeht Autoplay-Blockade)
-async function startCamera() {
-    statusEl.innerText = "Frage Kamera-Zugriff an...";
-    btnStart.style.display = "none"; // Button weg
-
-    try {
-        // Constraints für Handy Rückkamera
-        const constraints = { 
-            video: { 
-                facingMode: "environment", 
-                width: { ideal: 1280 }, 
-                height: { ideal: 720 } 
-            },
-            audio: false 
-        };
-
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        video.srcObject = stream;
-        
-        // Warten bis Video wirklich Daten hat
-        video.onloadedmetadata = () => {
-            video.play().then(() => {
-                statusEl.innerText = "Video läuft! Initialisiere CV...";
-                initCV();
-            }).catch(e => {
-                logError("Play blockiert: " + e.message);
-            });
-        };
-    } catch (err) {
-        logError("Kamera Zugriff verweigert oder kein HTTPS! " + err.name);
+    function log(text, type = 'normal') {
+        const div = document.createElement('div');
+        div.className = 'msg ' + type;
+        div.innerText = text;
+        logLayer.appendChild(div);
+        console.log(text);
     }
-}
 
-function initCV() {
-    try {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        
-        // Speicher reservieren
-        src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-        dst = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC1);
-        contours = new cv.MatVector();
-        hierarchy = new cv.Mat();
-        poly = new cv.Mat(); // Polygon Speicher
+    // 1. Check: Läuft JS überhaupt?
+    log("Schritt 1: JavaScript läuft.");
 
-        isStreaming = true;
-        statusEl.innerText = "Suche A4 Blatt...";
-        requestAnimationFrame(processVideo);
-    } catch(e) {
-        logError("CV Init fehlgeschlagen: " + e.message);
+    // 2. Check: Ist die Verbindung sicher?
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        log("ACHTUNG: Seite ist nicht HTTPS! Kamera wird wahrscheinlich blockiert.", "error");
+        log("Aktuelle URL: " + location.href, "warn");
+    } else {
+        log("Verbindung sieht sicher aus (HTTPS/Localhost).", "success");
     }
-}
 
-// Der Loop (ca 30x pro Sekunde)
-function processVideo() {
-    if (!isStreaming) return;
+    // 3. Check: Hat der Browser die API?
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        log("FEHLER: Dein Browser unterstützt keine Kamera-API (getUserMedia fehlt).", "error");
+        log("Nutzt du ein iPhone? Dann muss es Safari sein (nicht Chrome/Firefox auf iOS).", "warn");
+    } else {
+        log("Browser API vorhanden. Versuche Zugriff...", "success");
+        attemptCameraStart();
+    }
 
-    try {
-        // Videoframe in OpenCV Matrix laden
-        let cap = new cv.VideoCapture(video);
-        cap.read(src);
+    async function attemptCameraStart() {
+        try {
+            // Wir versuchen erst die Rückkamera
+            const constraints = { 
+                audio: false, 
+                video: { 
+                    facingMode: 'environment', // Rückkamera
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                } 
+            };
 
-        // Bildverarbeitung: Grau -> Blur -> Canny (Kanten)
-        cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
-        cv.GaussianBlur(dst, dst, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-        cv.Canny(dst, dst, 50, 150); // Thresholds etwas lockerer
+            log("Fordere Stream an (environment)...");
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            handleStream(stream);
 
-        // Konturen finden
-        cv.findContours(dst, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-        let maxArea = 0;
-        let foundContour = null;
-
-        // Loop durch alle gefundenen Formen
-        for (let i = 0; i < contours.size(); ++i) {
-            let cnt = contours.get(i);
-            let area = cv.contourArea(cnt);
+        } catch (err) {
+            log("Fehler bei Rückkamera: " + err.name + ": " + err.message, "error");
             
-            // Filter: Muss groß genug sein (10% des Bildes)
-            if (area > (video.videoWidth * video.videoHeight * 0.1)) {
-                let peri = cv.arcLength(cnt, true);
-                
-                // Form vereinfachen
-                cv.approxPolyDP(cnt, poly, 0.02 * peri, true);
-
-                // Check: Hat es 4 Ecken?
-                if (poly.rows === 4 && cv.isContourConvex(poly)) {
-                    if (area > maxArea) {
-                        maxArea = area;
-                        // Wir müssen die Punkte kopieren, da 'poly' überschrieben wird
-                        // In diesem einfachen Demo zeichnen wir direkt
-                        drawResult(poly);
-                        statusEl.innerText = "Blatt gefunden! (Grün)";
-                    }
-                }
+            // Fallback: Irgendeine Kamera
+            log("Versuche Fallback (irgendeine Kamera)...", "warn");
+            try {
+                const streamFallback = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                handleStream(streamFallback);
+            } catch (err2) {
+                log("FATAL: Zugriff komplett verweigert. " + err2.message, "error");
+                log("Hast du 'Zulassen' geklickt?", "warn");
+                btn.style.display = "block"; // Button zeigen für manuellen Versuch
             }
         }
-        
-        // Aufräumen (Sehr wichtig in JS!)
-        // Wir löschen hier contours nicht komplett, sondern leeren den Vector für den nächsten Frame
-        // Hinweis: In Produktionscode müsste man poly.clone() nutzen und manuell löschen.
-    } catch (err) {
-        // Fehler einmal loggen, dann loop stoppen um Absturz zu verhindern
-        logError(err);
-        isStreaming = false;
     }
 
-    requestAnimationFrame(processVideo);
-}
+    function handleStream(stream) {
+        log("Stream erhalten! Setze Video-Source...", "success");
+        video.srcObject = stream;
+        
+        // Warten bis Daten da sind
+        video.onloadedmetadata = () => {
+            log("Metadaten geladen. Versuche play()...");
+            video.play().then(() => {
+                log("VIDEO SOLLTE JETZT LAUFEN!", "success");
+                document.body.style.backgroundColor = "#000"; // Hintergrund schwarz machen
+            }).catch(e => {
+                log("Autoplay blockiert: " + e.message, "error");
+                btn.style.display = "block"; // Button zeigen
+                btn.innerText = "KLICKEN ZUM STARTEN";
+            });
+        };
+    }
 
-function drawResult(polyData) {
-    // Zeichne grünen Rahmen auf das Canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height); // Erst alles löschen
-    
-    ctx.beginPath();
-    ctx.lineWidth = 5;
-    ctx.strokeStyle = "#00ff00";
-    
-    // polyData enthält die Punkte [x1, y1, x2, y2, ...]
-    const pts = polyData.data32S; // Array mit Integer Koordinaten
-    ctx.moveTo(pts[0], pts[1]);
-    ctx.lineTo(pts[2], pts[3]);
-    ctx.lineTo(pts[4], pts[5]);
-    ctx.lineTo(pts[6], pts[7]);
-    ctx.closePath();
-    ctx.stroke();
-}
+    function startCameraManual() {
+        btn.style.display = "none";
+        attemptCameraStart();
+    }
+
 </script>
 </body>
 </html>
